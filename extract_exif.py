@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections.abc import Callable
 import csv
 from datetime import datetime
+from itertools import cycle
 import json
 import math
 import os
 from pathlib import Path
 import re
 import sys
+import threading
 from typing import Any
 
 from PIL import ExifTags, Image
@@ -25,6 +28,57 @@ PHOTO_EXTENSIONS = {
 }
 FIELDS = ("file_path", "date_time", "location", "latitude", "longitude", "exif")
 MISSING = "NA"
+
+
+class Spinner:
+    """Animate stderr on terminals and keep warning messages on separate lines."""
+
+    def __init__(self, message: str):
+        self.message = message
+        self.stream = sys.stderr
+        self.enabled = self.stream.isatty() and os.environ.get("TERM") != "dumb"
+        self._frames = cycle("|/-\\")
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._animate, daemon=True)
+
+    def _draw(self) -> None:
+        self.stream.write(f"\r{next(self._frames)} {self.message}")
+        self.stream.flush()
+
+    def _clear(self) -> None:
+        self.stream.write("\r" + " " * (len(self.message) + 2) + "\r")
+        self.stream.flush()
+
+    def _animate(self) -> None:
+        while not self._stop.wait(0.1):
+            with self._lock:
+                self._draw()
+
+    def write(self, message: str) -> None:
+        with self._lock:
+            if self.enabled:
+                self._clear()
+            print(message, file=self.stream, flush=True)
+
+    def __enter__(self) -> Spinner:
+        if self.enabled:
+            try:
+                self._draw()
+                self._thread.start()
+            except BaseException:
+                self._stop.set()
+                if self._thread.is_alive():
+                    self._thread.join()
+                self._clear()
+                raise
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self.enabled:
+            self._stop.set()
+            self._thread.join()
+            self._clear()
 
 
 def text_value(value: Any) -> str:
@@ -130,14 +184,17 @@ def extract_metadata(path: Path) -> dict[str, Any]:
         }
 
 
-def scan_photos(directory: Path) -> tuple[list[dict[str, Any]], int]:
+def scan_photos(
+    directory: Path, on_warning: Callable[[str], None] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
     records = []
     errors = 0
+    warn = on_warning if on_warning is not None else lambda message: print(message, file=sys.stderr)
 
     def report_error(error: OSError) -> None:
         nonlocal errors
         errors += 1
-        print(f"Warning: cannot scan directory: {error}", file=sys.stderr)
+        warn(f"Warning: cannot scan directory: {error}")
 
     for root, directories, filenames in os.walk(directory, onerror=report_error, followlinks=False):
         directories[:] = sorted(name for name in directories if not (Path(root) / name).is_symlink())
@@ -150,7 +207,7 @@ def scan_photos(directory: Path) -> tuple[list[dict[str, Any]], int]:
             except (OSError, ValueError, TypeError, SyntaxError, KeyError, OverflowError,
                     ZeroDivisionError, Image.DecompressionBombError) as error:
                 errors += 1
-                print(f"Warning: cannot read {path}: {error}", file=sys.stderr)
+                warn(f"Warning: cannot read {path}: {error}")
     return records, errors
 
 
@@ -181,12 +238,16 @@ def main(argv: list[str] | None = None) -> int:
     if not directory.is_dir():
         parser.error(f"not a directory: {directory}")
 
-    records, errors = scan_photos(directory)
     try:
-        json_path, csv_path = write_outputs(records, args.output_dir.expanduser().absolute())
+        with Spinner("Extracting and exporting metadata...") as progress:
+            records, errors = scan_photos(directory, on_warning=progress.write)
+            json_path, csv_path = write_outputs(records, args.output_dir.expanduser().absolute())
     except OSError as error:
         print(f"Error: cannot write output: {error}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
     print(f"Exported {len(records)} photo(s) to {json_path} and {csv_path}.")
     if errors:
         print(f"Completed with {errors} read/scan error(s); see warnings above.", file=sys.stderr)
