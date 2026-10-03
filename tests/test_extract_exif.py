@@ -1,4 +1,3 @@
-import base64
 import csv
 import json
 from pathlib import Path
@@ -53,7 +52,7 @@ class MetadataTests(unittest.TestCase):
             capture_output=True, text=True, check=False,
         )
 
-    def test_capture_time_location_and_nested_tags(self):
+    def test_only_capture_time_and_location_are_returned(self):
         path = self.root / "photo.jpg"
         save_photo(
             path, capture_time="2025:06:07 08:09:10", gps=gps_tags(),
@@ -61,19 +60,17 @@ class MetadataTests(unittest.TestCase):
             extra_details={37521: "123", 36881: "+02:00", 33434: IFDRational(1, 125)},
         )
         record = extract_exif.extract_metadata(path)
-        self.assertEqual(record["date_time"], "2025-06-07T08:09:10.123+02:00")
-        self.assertAlmostEqual(record["latitude"], 37.50833333)
-        self.assertEqual(record["longitude"], -122.25)
-        self.assertEqual(record["location"], "37.50833333, -122.25000000")
-        self.assertEqual(record["exif"]["GPSInfo"]["GPSLatitudeRef"], "N")
-        self.assertAlmostEqual(record["exif"]["ExifOffset"]["ExposureTime"], 1 / 125)
+        self.assertEqual(record, {
+            "date_time": "2025-06-07T08:09:10.123+02:00",
+            "location": "37.50833333, -122.25000000",
+        })
 
     def test_south_and_east_location(self):
         path = self.root / "south.jpg"
         save_photo(path, gps=gps_tags("S", "E"))
         record = extract_exif.extract_metadata(path)
-        self.assertLess(record["latitude"], 0)
-        self.assertGreater(record["longitude"], 0)
+        self.assertEqual(record["location"], "-37.50833333, 122.25000000")
+        self.assertEqual(record["date_time"], "NA")
 
     def test_exif_in_other_supported_formats(self):
         for suffix in (".png", ".tiff", ".webp", ".avif"):
@@ -90,21 +87,29 @@ class MetadataTests(unittest.TestCase):
         record = extract_exif.extract_metadata(path)
         self.assertEqual(record["location"], "0.00000000, 0.00000000")
 
-    def test_no_exif_still_produces_record(self):
+    def test_no_exif_is_skipped(self):
         path = self.root / "plain.png"
         save_photo(path)
-        record = extract_exif.extract_metadata(path)
-        for field in ("date_time", "location", "latitude", "longitude"):
-            self.assertEqual(record[field], "NA")
-        self.assertEqual(record["exif"], {})
+        self.assertIsNone(extract_exif.extract_metadata(path))
 
-    def test_partial_gps_is_not_a_location(self):
+    def test_partial_gps_is_skipped(self):
         path = self.root / "partial.jpg"
         save_photo(path, gps={1: "N", 2: (10, 0, 0)})
-        record = extract_exif.extract_metadata(path)
-        self.assertEqual(record["location"], "NA")
-        self.assertEqual(record["latitude"], 10)
-        self.assertEqual(record["longitude"], "NA")
+        self.assertIsNone(extract_exif.extract_metadata(path))
+
+    def test_invalid_gps_in_exif_is_skipped(self):
+        for tag, value in ((1, "?"), (2, (91, 0, 0)), (3, "?"), (4, (181, 0, 0))):
+            with self.subTest(tag=tag):
+                path = self.root / f"invalid-{tag}.jpg"
+                save_photo(path, capture_time="2025:01:02 03:04:05", gps={**gps_tags(), tag: value})
+                self.assertIsNone(extract_exif.extract_metadata(path))
+
+    def test_invalid_date_does_not_exclude_valid_location(self):
+        path = self.root / "bad-date.jpg"
+        save_photo(path, capture_time="0000:00:00 00:00:00", gps=gps_tags())
+        self.assertEqual(extract_exif.extract_metadata(path), {
+            "date_time": "NA", "location": "37.50833333, -122.25000000",
+        })
 
     def test_invalid_gps_values(self):
         for value, reference in (
@@ -126,37 +131,54 @@ class MetadataTests(unittest.TestCase):
         )
         self.assertEqual(extract_exif.capture_datetime({}, {36867: "0000:00:00 00:00:00"}), "NA")
 
-    def test_binary_metadata_remains_available(self):
+    def test_binary_metadata_is_excluded(self):
         path = self.root / "binary.jpg"
         value = b"ASCII\x00\x00\x00a comment"
-        save_photo(path, extra_details={37510: value})
+        save_photo(path, gps=gps_tags(), extra_details={37510: value})
         record = extract_exif.extract_metadata(path)
-        encoded = record["exif"]["ExifOffset"]["UserComment"]
-        self.assertEqual(encoded["encoding"], "base64")
-        self.assertEqual(base64.b64decode(encoded["data"]), value)
+        self.assertEqual(record, {"date_time": "NA", "location": "37.50833333, -122.25000000"})
 
     def test_recursive_cli_and_matching_json_csv(self):
         source = self.root / "photos with spaces"
-        save_photo(source / 'été, "photo".JPG', capture_time="2025:01:02 03:04:05", gps=gps_tags())
+        save_photo(source / 'été, "photo".JPG', capture_time="2025:01:02 03:04:05",
+                   gps=gps_tags(), extra_details={37510: b"private comment"})
+        save_photo(source / "nested" / "located.png", gps=gps_tags("S", "E"))
         save_photo(source / "nested" / "plain.png")
+        save_photo(source / "dated-only.jpg", capture_time="2025:01:02 03:04:05")
+        save_photo(source / "partial-gps.jpg", gps={1: "N", 2: (10, 0, 0)})
+        save_photo(source / "invalid-gps.jpg", gps={**gps_tags(), 4: (181, 0, 0)})
         (source / "ignored.txt").write_text("not a photo", encoding="utf-8")
         output = self.root / "exports"
         result = self.run_cli(source, output)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertIn("Exported 2 photo(s)", result.stdout)
         records = json.loads((output / "exif_metadata.json").read_text(encoding="utf-8"))
         with (output / "exif_metadata.csv").open(encoding="utf-8", newline="") as stream:
             rows = list(csv.DictReader(stream))
-        self.assertEqual(len(records), 2)
-        self.assertEqual(len(rows), 2)
-        for record, row in zip(records, rows):
-            self.assertEqual(set(record), set(extract_exif.FIELDS))
-            self.assertEqual(json.loads(row.pop("exif")), record["exif"])
-            for field, value in row.items():
-                self.assertEqual(value, str(record[field]))
+        expected = [
+            {"date_time": "2025-01-02T03:04:05", "location": "37.50833333, -122.25000000"},
+            {"date_time": "NA", "location": "-37.50833333, 122.25000000"},
+        ]
+        self.assertEqual(records, expected)
+        self.assertEqual(rows, expected)
+
+    def test_all_photos_without_location_produce_empty_outputs(self):
+        source = self.root / "photos"
+        save_photo(source / "plain.jpg")
+        save_photo(source / "dated.jpg", capture_time="2025:01:02 03:04:05")
+        output = self.root / "exports"
+        result = self.run_cli(source, output)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertIn("Exported 0 photo(s)", result.stdout)
+        self.assertEqual(json.loads((output / "exif_metadata.json").read_text()), [])
+        with (output / "exif_metadata.csv").open(newline="") as stream:
+            self.assertEqual(list(csv.reader(stream)), [["date_time", "location"]])
 
     def test_unreadable_photo_reports_error_and_keeps_valid_output(self):
         source = self.root / "photos"
-        save_photo(source / "good.jpg")
+        save_photo(source / "good.jpg", gps=gps_tags())
         (source / "bad.jpg").write_bytes(b"not an image")
         output = self.root / "exports"
         result = self.run_cli(source, output)
@@ -195,7 +217,7 @@ class MetadataTests(unittest.TestCase):
 
     def test_symlinks_are_skipped(self):
         source = self.root / "photos"
-        save_photo(source / "actual" / "photo.jpg")
+        save_photo(source / "actual" / "photo.jpg", gps=gps_tags())
         (source / "loop").symlink_to(source, target_is_directory=True)
         (source / "duplicate.jpg").symlink_to(source / "actual" / "photo.jpg")
         records, errors = extract_exif.scan_photos(source)

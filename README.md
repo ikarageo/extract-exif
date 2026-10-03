@@ -1,6 +1,7 @@
 # extract-exif
 
-Recursively extract photo EXIF metadata into both JSON and CSV using Python.
+Recursively extract EXIF dates and locations from geotagged photos into both JSON
+and CSV using Python. Only photos with valid GPS coordinates are exported.
 
 ## Run
 
@@ -56,17 +57,27 @@ Once the environment exists, you can also run Python directly:
 
 ## Output
 
-JSON contains a list of records, one per readable photo. CSV contains the same
-records with these columns:
+JSON contains a list of records, one per readable photo with valid EXIF GPS
+latitude and longitude. CSV contains the same records with exactly two columns:
 
 | Field | Meaning |
 | --- | --- |
-| `file_path` | Absolute path to the photo. |
 | `date_time` | ISO 8601 EXIF capture timestamp, or `"NA"` if unavailable. |
-| `location` | `"latitude, longitude"` in decimal degrees, or `"NA"` if either coordinate is missing or invalid. |
-| `latitude` | Signed decimal degrees, or `"NA"`. |
-| `longitude` | Signed decimal degrees, or `"NA"`. |
-| `exif` | EXIF tags readable by Pillow, including nested EXIF and GPS fields. This is an object in JSON and a JSON-encoded cell in CSV. |
+| `location` | Required `"latitude, longitude"` in signed decimal degrees. |
+
+For example:
+
+```json
+[
+  {"date_time": "2025-06-07T08:09:10+02:00", "location": "37.50833333, -122.25000000"},
+  {"date_time": "NA", "location": "-37.50833333, 122.25000000"}
+]
+```
+
+Photos without EXIF, or with missing, incomplete, or invalid GPS coordinates,
+are skipped. Zero coordinates are valid. Missing or invalid dates become `"NA"`
+and do not exclude an otherwise valid location. File paths, separate latitude/
+longitude columns, and raw EXIF tags are omitted from both output formats.
 
 The timestamp uses `DateTimeOriginal`, then `DateTimeDigitized`, then `DateTime`.
 EXIF subseconds and UTC offset are included when available. A timestamp without
@@ -74,9 +85,7 @@ an offset retains the camera's local time; no timezone is guessed. Filesystem
 creation/modification times are not substituted for missing EXIF dates.
 
 Location is a GPS coordinate string, not a street address or city name. No network
-service or API key is needed for extraction. Binary EXIF values are represented
-as objects with `encoding: "base64"` and `data`; rational values become numbers.
-Vendor-specific maker notes remain raw binary when Pillow does not decode them.
+service or API key is needed for extraction.
 
 The scanner recognizes JPEG (`.jpg`, `.jpeg`, `.jpe`, `.jfif`), TIFF, PNG, WebP,
 AVIF, BMP, and GIF filenames, case-insensitively. Available EXIF varies by format
@@ -84,11 +93,12 @@ and image. HEIC/HEIF and camera RAW formats are not supported. For multi-frame
 images, metadata is read from the first frame. Symbolic links within the scan
 are skipped, preventing loops and duplicate traversal.
 
-Photos without EXIF still appear with `"NA"` values and an empty EXIF object.
 Unreadable images or directories produce warnings on stderr; the scan continues
-and exports readable photos. Exit codes are `0` for a successful scan, `1` for
-read/scan or output errors, `2` for invalid command-line arguments, and `130` for
-Ctrl+C. An empty scan produces `[]` in JSON and a header-only CSV.
+and exports readable photos with valid locations. Skipping photos without valid
+locations is normal and produces no warning or error. Exit codes are `0` for a
+successful scan, `1` for read/scan or output errors, `2` for invalid command-line
+arguments, and `130` for Ctrl+C. A scan with no qualifying photos produces `[]`
+in JSON and a header-only CSV.
 
 ## Tests
 
@@ -99,6 +109,6 @@ After running the launcher once (even with `--help`):
 ```
 
 Tests generate small local images and cover recursive extraction, GPS and missing
-metadata, date selection, binary tags, JSON/CSV agreement, and error handling.
+metadata, date selection, location filtering, JSON/CSV agreement, and error handling.
 Bootstrap tests also check fresh environment creation and recovery of an existing
 environment without pip, using temporary directories and no package downloads.
