@@ -17,6 +17,11 @@ run needs access to PyPI; later runs reuse the environment and installed package
 Paths containing spaces are supported when quoted. You can invoke the launcher
 from any working directory.
 
+A spinner appears while scanning photos and writing the exports in an interactive
+terminal, including WSL. It clears when the job finishes, fails, or is interrupted
+with Ctrl+C. Warnings remain visible on their own lines. The spinner is disabled
+when stderr is redirected or the terminal type is `dumb`.
+
 If an existing `.venv` is missing `pip`, the launcher repairs it using Python's
 built-in `ensurepip` module. On Ubuntu/Debian under WSL, install the prerequisite
 if the launcher reports that `venv` or `ensurepip` is unavailable:
@@ -82,8 +87,8 @@ are skipped, preventing loops and duplicate traversal.
 Photos without EXIF still appear with `"NA"` values and an empty EXIF object.
 Unreadable images or directories produce warnings on stderr; the scan continues
 and exports readable photos. Exit codes are `0` for a successful scan, `1` for
-read/scan or output errors, and `2` for invalid command-line arguments. An empty
-scan produces `[]` in JSON and a header-only CSV.
+read/scan or output errors, `2` for invalid command-line arguments, and `130` for
+Ctrl+C. An empty scan produces `[]` in JSON and a header-only CSV.
 
 ## Tests
 
