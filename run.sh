@@ -3,14 +3,36 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.venv"
+VENV_PYTHON="$VENV_DIR/bin/python"
 
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+venv_help() {
+    cat >&2 <<'EOF'
+Error: Python's virtual environment or pip bootstrap support is unavailable.
+On Ubuntu/Debian (including Ubuntu on WSL), install venv support:
+  sudo apt update && sudo apt install python3-venv
+If using a nondefault Python version, install its matching python3.X-venv package.
+Then run this launcher again; an existing virtual environment will be reused.
+EOF
+}
+
+if [[ ! -x "$VENV_PYTHON" ]]; then
     if ! command -v python3 >/dev/null 2>&1; then
         echo "Error: install Python 3.10 or newer (including venv support) first." >&2
         exit 1
     fi
-    python3 -m venv "$VENV_DIR"
+    if ! python3 -m venv "$VENV_DIR"; then
+        venv_help
+        exit 1
+    fi
 fi
 
-"$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir --quiet -r "$SCRIPT_DIR/requirements.txt"
-exec "$VENV_DIR/bin/python" "$SCRIPT_DIR/extract_exif.py" "$@"
+if ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then
+    echo "Installing missing pip into the virtual environment..." >&2
+    if ! "$VENV_PYTHON" -m ensurepip --upgrade || ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then
+        venv_help
+        exit 1
+    fi
+fi
+
+"$VENV_PYTHON" -m pip install --disable-pip-version-check --no-input --no-cache-dir --quiet -r "$SCRIPT_DIR/requirements.txt"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/extract_exif.py" "$@"

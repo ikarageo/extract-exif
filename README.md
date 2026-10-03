@@ -17,6 +17,22 @@ run needs access to PyPI; later runs reuse the environment and installed package
 Paths containing spaces are supported when quoted. You can invoke the launcher
 from any working directory.
 
+If an existing `.venv` is missing `pip`, the launcher repairs it using Python's
+built-in `ensurepip` module. On Ubuntu/Debian under WSL, install the prerequisite
+if the launcher reports that `venv` or `ensurepip` is unavailable:
+
+```bash
+sudo apt update
+sudo apt install python3-venv
+./run.sh "/mnt/c/Users/your-name/Pictures"
+```
+
+For a nondefault Python version, install its matching package (for example,
+`python3.12-venv` for Python 3.12). To repair an environment manually when using
+an older copy of the launcher, run `.venv/bin/python -m ensurepip --upgrade`.
+Create and use the environment inside WSL; Windows virtual environments cannot
+be reused as Linux virtual environments.
+
 By default, `exif_metadata.json` and `exif_metadata.csv` are written in your current
 working directory. Choose another output directory with:
 
@@ -79,3 +95,5 @@ After running the launcher once (even with `--help`):
 
 Tests generate small local images and cover recursive extraction, GPS and missing
 metadata, date selection, binary tags, JSON/CSV agreement, and error handling.
+Bootstrap tests also check fresh environment creation and recovery of an existing
+environment without pip, using temporary directories and no package downloads.
